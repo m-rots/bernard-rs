@@ -1,7 +1,8 @@
-use bernard::{auth::Account, Bernard, ChangedPath, Path};
+use bernard::{auth::Account, Bernard, ChangedFile, ChangedFolder};
 use clap::{App, Arg};
 use colored::*;
 use shadow_rs::shadow;
+use std::path::PathBuf;
 
 shadow!(build);
 
@@ -84,8 +85,15 @@ async fn main() -> anyhow::Result<()> {
         None => {
             bernard.sync_drive(drive_id).await?;
 
-            let paths = bernard.get_changed_paths(drive_id)?;
-            list_changes(&paths);
+            let now = std::time::Instant::now();
+            let folders = bernard.get_changed_folders_paths(drive_id)?;
+            let files = bernard.get_changed_files_paths(drive_id)?;
+
+            println!(
+                "Running the changelog-based queries took {:?}",
+                now.elapsed()
+            );
+            list_changes(folders, files);
         }
         _ => (),
     }
@@ -93,30 +101,52 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn format_path(path: &Path) -> String {
-    match path.trashed {
-        true => format!(
-            "{} {:?} {}",
-            &path.id.dimmed(),
-            path.path,
-            "(trashed)".bright_red()
-        ),
-        false => format!("{} {:?}", &path.id.dimmed(), path.path),
+fn format_path(id: &str, path: &std::path::Path, trashed: bool) -> String {
+    match trashed {
+        true => format!("{} {:?} {}", id.dimmed(), path, "(trashed)".bright_red()),
+        false => format!("{} {:?}", id.dimmed(), path),
     }
 }
 
-fn list_changes(paths: &Vec<ChangedPath>) {
-    if paths.len() > 0 {
-        println!("Changed paths:")
+fn list_changes<I, J>(folders: I, files: J)
+where
+    I: IntoIterator<Item = (ChangedFolder, PathBuf)>,
+    J: IntoIterator<Item = (ChangedFile, PathBuf)>,
+{
+    for (folder, path) in folders {
+        match folder {
+            ChangedFolder::Created(folder) => {
+                println!(
+                    "{}: {}",
+                    "Created".bright_green(),
+                    format_path(&folder.id, &path, folder.trashed)
+                )
+            }
+            ChangedFolder::Deleted(folder) => {
+                println!(
+                    "{}: {}",
+                    "Deleted".bright_red(),
+                    format_path(&folder.id, &path, folder.trashed)
+                )
+            }
+        }
     }
 
-    for path in paths {
-        match path {
-            ChangedPath::Created(path) => {
-                println!("{}: {}", "Created".bright_green(), format_path(path))
+    for (file, path) in files {
+        match file {
+            ChangedFile::Created(file) => {
+                println!(
+                    "{}: {}",
+                    "Created".bright_green(),
+                    format_path(&file.id, &path, file.trashed)
+                )
             }
-            ChangedPath::Deleted(path) => {
-                println!("{}: {}", "Deleted".bright_red(), format_path(path))
+            ChangedFile::Deleted(file) => {
+                println!(
+                    "{}: {}",
+                    "Deleted".bright_red(),
+                    format_path(&file.id, &path, file.trashed)
+                )
             }
         }
     }

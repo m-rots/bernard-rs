@@ -2,4 +2,6 @@
 # see diesel.rs/guides/configuring-diesel-cli
 
 [print_schema]
-file = "bernard/src/schema/generated.rs"
+file = "bernard/src/schema.rs"
+patch_file = "bernard/src/schema.patch"
+with_docs = true

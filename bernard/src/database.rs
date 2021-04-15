@@ -318,3 +318,45 @@ pub fn get_changed_paths(conn: &SqliteConnection, drive_id: &str) -> Result<Vec<
 
     Ok(changed_paths)
 }
+
+pub fn get_changed_folders_paths(
+    conn: &SqliteConnection,
+    drive_id: &str,
+) -> Result<Vec<(ChangedFolder, ChangedPath)>> {
+    use schema::{folder_changelog as folders, path_changelog as paths};
+
+    let changed_folders = folders::table
+        .filter(folders::drive_id.eq(drive_id))
+        .inner_join(
+            paths::table.on(paths::id.eq(folders::id).and(
+                paths::drive_id
+                    .eq(folders::drive_id)
+                    .and(paths::deleted)
+                    .eq(folders::deleted),
+            )),
+        )
+        .load(conn)?;
+
+    Ok(changed_folders)
+}
+
+pub fn get_changed_files_paths(
+    conn: &SqliteConnection,
+    drive_id: &str,
+) -> Result<Vec<(ChangedFile, ChangedPath)>> {
+    use schema::{file_changelog as files, path_changelog as paths};
+
+    let changed_files = files::table
+        .filter(files::drive_id.eq(drive_id))
+        .inner_join(
+            paths::table.on(paths::id.eq(files::id).and(
+                paths::drive_id
+                    .eq(files::drive_id)
+                    .and(paths::deleted)
+                    .eq(files::deleted),
+            )),
+        )
+        .load(conn)?;
+
+    Ok(changed_files)
+}

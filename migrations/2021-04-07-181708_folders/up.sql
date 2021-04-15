@@ -52,27 +52,27 @@ CREATE VIEW paths AS
     SELECT p.id, p.drive_id, p.path FROM parents p
     WHERE p.drive_id = p.parent;
 
-CREATE VIEW path_changelog ('id', 'drive_id', 'deleted', 'trashed', 'path') AS
+CREATE VIEW path_changelog ('id', 'drive_id', 'deleted', 'path') AS
     WITH
         changelog_paths AS (
             -- Initial folders
-            SELECT f.id, f.drive_id, f.parent, f.deleted, f.trashed, "/" || f.name as path FROM folder_changelog f
+            SELECT f.id, f.drive_id, f.parent, f.deleted, "/" || f.name as path FROM folder_changelog f
             
             UNION ALL
             
             -- Initial files
-            SELECT f.id, f.drive_id, f.parent, f.deleted, f.trashed, "/" || f.name as path FROM file_changelog f
+            SELECT f.id, f.drive_id, f.parent, f.deleted, "/" || f.name as path FROM file_changelog f
             
             UNION ALL
             
             -- Recursive clause (using p.id to preserve original id)
-            SELECT p.id, f.drive_id, f.parent, f.deleted, f.trashed, "/" || f.name || p.path as path
+            SELECT p.id, f.drive_id, f.parent, f.deleted, "/" || f.name || p.path as path
             FROM folder_changelog f
             INNER JOIN changelog_paths p ON f.id = p.parent AND f.drive_id = p.drive_id
         ),
         full_paths AS (
             -- Initial changed paths
-            SELECT p.id, p.drive_id, p.parent, p.deleted, p.trashed, p.path FROM changelog_paths p
+            SELECT p.id, p.drive_id, p.parent, p.deleted, p.path FROM changelog_paths p
             -- Not exists to only get the "full" path of each id.
             WHERE NOT EXISTS (
                 SELECT * FROM changelog_paths p2
@@ -82,12 +82,12 @@ CREATE VIEW path_changelog ('id', 'drive_id', 'deleted', 'trashed', 'path') AS
             UNION ALL
             
             -- Recursive clause
-            SELECT p.id, f.drive_id, f.parent, p.deleted, p.trashed, "/" || f.name || p.path as path
+            SELECT p.id, f.drive_id, f.parent, p.deleted, "/" || f.name || p.path as path
             FROM folders f
             INNER JOIN full_paths p ON f.id = p.parent AND f.drive_id = p.drive_id
             WHERE f.parent IS NOT NULL
         )
-    SELECT p.id, p.drive_id, p.deleted, p.trashed, p.path FROM full_paths p
+    SELECT p.id, p.drive_id, p.deleted, p.path FROM full_paths p
     WHERE p.parent = p.drive_id;
 
 -- Changelogs

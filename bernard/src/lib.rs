@@ -7,6 +7,7 @@ use fetch::{FetchBuilder, Fetcher};
 use model::Drive;
 use reqwest::IntoUrl;
 use snafu::Snafu;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::block_in_place;
 
@@ -115,6 +116,28 @@ impl<'a> Bernard<'a> {
     pub fn get_changed_paths(&self, drive_id: &str) -> Result<Vec<ChangedPath>> {
         let changed_paths = database::get_changed_paths(&self.conn, drive_id)?;
         Ok(changed_paths)
+    }
+
+    pub fn get_changed_folders_paths(
+        &self,
+        drive_id: &str,
+    ) -> Result<impl Iterator<Item = (ChangedFolder, PathBuf)>> {
+        let changed_folders = database::get_changed_folders_paths(&self.conn, drive_id)?;
+
+        Ok(changed_folders
+            .into_iter()
+            .map(|(folder, path)| (folder, Path::from(path).path)))
+    }
+
+    pub fn get_changed_files_paths(
+        &self,
+        drive_id: &str,
+    ) -> Result<impl Iterator<Item = (ChangedFile, PathBuf)>> {
+        let changed_files = database::get_changed_files_paths(&self.conn, drive_id)?;
+
+        Ok(changed_files
+            .into_iter()
+            .map(|(file, path)| (file, Path::from(path).path)))
     }
 }
 

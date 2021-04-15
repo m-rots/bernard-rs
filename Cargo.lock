@@ -3,6 +3,15 @@
 version = 3
 
 [[package]]
+name = "ansi_term"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d52a9bb7ec0cf484c551830a7ce27bd20d67eac647e1befb56b0be4ee39a55d2"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -67,6 +76,7 @@ dependencies = [
  "serde_json",
  "snafu",
  "tokio",
+ "tracing 0.2.0",
 ]
 
 [[package]]
@@ -79,6 +89,8 @@ dependencies = [
  "colored",
  "shadow-rs",
  "tokio",
+ "tracing 0.2.0",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -196,7 +208,7 @@ checksum = "ea221b5284a47e40033bf9b66f35f984ec0ea2931eb03505246cd27a963f981b"
 [[package]]
 name = "diesel"
 version = "2.0.0"
-source = "git+https://github.com/diesel-rs/diesel#fe989447932a6c6674d0f781bd5e715d21518d73"
+source = "git+https://github.com/m-rots/diesel?branch=sqlite-error-handling#177290d82aa5bb5d7376389e7de5c886986ed11d"
 dependencies = [
  "byteorder",
  "diesel_derives",
@@ -207,7 +219,7 @@ dependencies = [
 [[package]]
 name = "diesel_derives"
 version = "2.0.0"
-source = "git+https://github.com/diesel-rs/diesel#fe989447932a6c6674d0f781bd5e715d21518d73"
+source = "git+https://github.com/m-rots/diesel?branch=sqlite-error-handling#177290d82aa5bb5d7376389e7de5c886986ed11d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -217,7 +229,7 @@ dependencies = [
 [[package]]
 name = "diesel_migrations"
 version = "2.0.0"
-source = "git+https://github.com/diesel-rs/diesel#fe989447932a6c6674d0f781bd5e715d21518d73"
+source = "git+https://github.com/m-rots/diesel?branch=sqlite-error-handling#177290d82aa5bb5d7376389e7de5c886986ed11d"
 dependencies = [
  "diesel",
  "migrations_internals",
@@ -355,7 +367,7 @@ dependencies = [
  "slab",
  "tokio",
  "tokio-util",
- "tracing",
+ "tracing 0.1.25",
 ]
 
 [[package]]
@@ -436,7 +448,7 @@ dependencies = [
  "socket2",
  "tokio",
  "tower-service",
- "tracing",
+ "tracing 0.1.25",
  "want",
 ]
 
@@ -601,6 +613,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "matchers"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8263075bb86c5a1b1427b5ae862e8889656f126e9f77c484496e8b47cf5c5558"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "matches"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,7 +636,7 @@ checksum = "0ee1c47aaa256ecabcaea351eae4a9b01ef39ed810004e298d2511ed284b1525"
 [[package]]
 name = "migrations_internals"
 version = "2.0.0"
-source = "git+https://github.com/diesel-rs/diesel#fe989447932a6c6674d0f781bd5e715d21518d73"
+source = "git+https://github.com/m-rots/diesel?branch=sqlite-error-handling#177290d82aa5bb5d7376389e7de5c886986ed11d"
 dependencies = [
  "serde",
  "toml",
@@ -624,7 +645,7 @@ dependencies = [
 [[package]]
 name = "migrations_macros"
 version = "2.0.0"
-source = "git+https://github.com/diesel-rs/diesel#fe989447932a6c6674d0f781bd5e715d21518d73"
+source = "git+https://github.com/m-rots/diesel?branch=sqlite-error-handling#177290d82aa5bb5d7376389e7de5c886986ed11d"
 dependencies = [
  "migrations_internals",
  "proc-macro2",
@@ -958,6 +979,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-automata"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae1ded71d66a4a97f5e961fd0cb25a5f366a42a41570d16a763a69c092c26ae4"
+dependencies = [
+ "byteorder",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-syntax"
 version = "0.6.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1121,6 +1152,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79c719719ee05df97490f80a45acfc99e5a30ce98a1e4fb67aee422745ae14e3"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,6 +1279,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8018d24e04c95ac8790716a5987d0fec4f8b27249ffa0f7d33f1369bdfb88cbd"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "time"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1342,7 +1391,28 @@ checksum = "01ebdc2bb4498ab1ab5f5b73c5803825e60199229ccba0698170e3be0e7f959f"
 dependencies = [
  "cfg-if",
  "pin-project-lite",
- "tracing-core",
+ "tracing-core 0.1.17",
+]
+
+[[package]]
+name = "tracing"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "cfg-if",
+ "pin-project-lite",
+ "tracing-attributes",
+ "tracing-core 0.2.0",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1352,6 +1422,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f50de3927f93d202783f4513cda820ab47ef17f624b03c096e86ef00c67e6b5f"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "tracing-core"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "lazy_static",
+ "log",
+ "tracing-core 0.2.0",
+]
+
+[[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "serde",
+ "tracing-core 0.2.0",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.0"
+source = "git+https://github.com/tokio-rs/tracing#7567c2d1d1e08bf68fbf9d44e3d90579a3f24fe4"
+dependencies = [
+ "ansi_term",
+ "chrono",
+ "lazy_static",
+ "matchers",
+ "regex",
+ "serde",
+ "serde_json",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing 0.2.0",
+ "tracing-core 0.2.0",
+ "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

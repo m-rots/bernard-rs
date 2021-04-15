@@ -3,11 +3,17 @@ use clap::{App, Arg};
 use colored::*;
 use shadow_rs::shadow;
 use std::path::PathBuf;
+use tracing_subscriber::EnvFilter;
 
 shadow!(build);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .pretty()
+        .init();
+
     let matches = App::new("Bernard")
         .version(build::clap_version().as_str())
         .author("Storm Timmermans (@m-rots)")
@@ -83,17 +89,18 @@ async fn main() -> anyhow::Result<()> {
             bernard.add_drive(drive_id).await?;
         }
         None => {
-            bernard.sync_drive(drive_id).await?;
+            let result = bernard.sync_drive(drive_id).await;
+            match result {
+                Err(error) => match error {
+                    _ => return Err(error.into()),
+                },
+                Ok(()) => {
+                    let folders = bernard.get_changed_folders_paths(drive_id)?;
+                    let files = bernard.get_changed_files_paths(drive_id)?;
 
-            let now = std::time::Instant::now();
-            let folders = bernard.get_changed_folders_paths(drive_id)?;
-            let files = bernard.get_changed_files_paths(drive_id)?;
-
-            println!(
-                "Running the changelog-based queries took {:?}",
-                now.elapsed()
-            );
-            list_changes(folders, files);
+                    list_changes(folders, files);
+                }
+            }
         }
         _ => (),
     }

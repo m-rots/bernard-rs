@@ -6,6 +6,7 @@ use serde::de::Deserializer;
 use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
 use std::sync::{Arc, Mutex};
+use tracing::trace;
 
 mod changes;
 mod content;
@@ -84,6 +85,8 @@ impl<'a> Fetcher<'a> {
         let AccessToken { token, .. } = refresh_token.access_token(&self.account).await;
 
         let request = request.bearer_auth(token).build().unwrap();
+
+        trace!(url_path = %request.url().path(), "making request");
 
         let response: T = self
             .client
@@ -166,6 +169,13 @@ impl Item {
         match self {
             Item::File(file) => file.id,
             Item::Folder(folder) => folder.id,
+        }
+    }
+
+    pub fn id<'a>(&'a self) -> &'a str {
+        match self {
+            Item::File(file) => &file.id,
+            Item::Folder(folder) => &folder.id,
         }
     }
 }

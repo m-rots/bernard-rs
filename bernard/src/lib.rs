@@ -10,6 +10,7 @@ use snafu::Snafu;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::block_in_place;
+use tracing::debug;
 
 // TODO: Make auth its own crate + errors
 pub mod auth;
@@ -27,11 +28,16 @@ pub enum Error {
     Database { source: database::Error },
     #[snafu(display("Network"))]
     Network { source: fetch::Error },
+    #[snafu(display("Received a partial change list from Google"))]
+    PartialChangeList { source: database::Error },
 }
 
 impl From<database::Error> for Error {
-    fn from(source: database::Error) -> Self {
-        Self::Database { source }
+    fn from(error: database::Error) -> Self {
+        match error {
+            database::Error::DataIntegrity { .. } => Self::PartialChangeList { source: error },
+            _ => Self::Database { source: error },
+        }
     }
 }
 
@@ -54,6 +60,7 @@ impl<'a> Bernard<'a> {
         BernardBuilder::new(database_path, account)
     }
 
+    #[tracing::instrument(skip(self))]
     async fn fill_drive(&mut self, drive_id: &str) -> Result<()> {
         let items = self.fetch.all_files(drive_id).await?;
         block_in_place(|| database::add_content(&self.conn, items))?;
@@ -61,6 +68,7 @@ impl<'a> Bernard<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn initialise_drive(&mut self, drive_id: &str) -> Result<()> {
         let page_token = self.fetch.start_page_token(drive_id).await?;
         let name = self.fetch.drive_name(drive_id).await?;
@@ -70,6 +78,7 @@ impl<'a> Bernard<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn add_drive(&mut self, drive_id: &str) -> Result<()> {
         self.initialise_drive(drive_id).await?;
         self.fill_drive(drive_id).await?;
@@ -78,13 +87,21 @@ impl<'a> Bernard<'a> {
         Ok(())
     }
 
-    pub async fn sync_drive(&mut self, drive_id: &str) -> Result<()> {
-        let drive = block_in_place(|| -> Result<Option<Drive>> {
-            let drive = database::get_drive(&self.conn, drive_id)?;
-            database::clear_changelog(&self.conn, drive_id)?;
+    /// Async wrapper of [clear_changelog](database::clear_changelog).
+    async fn clear_changelog(&self, drive_id: &str) -> Result<()> {
+        block_in_place(|| database::clear_changelog(&self.conn, drive_id)).map_err(|e| e.into())
+    }
 
-            Ok(drive)
-        })?;
+    /// Async wrapper of [get_drive](database::get_drive).
+    async fn get_drive(&self, drive_id: &str) -> Result<Option<Drive>> {
+        block_in_place(|| database::get_drive(&self.conn, drive_id).map_err(|e| e.into()))
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn sync_drive(&mut self, drive_id: &str) -> Result<()> {
+        // Always clear changelog for consistent database state when sync_drive is called.
+        self.clear_changelog(drive_id).await?;
+        let drive = self.get_drive(drive_id).await?;
 
         match drive {
             None => {
@@ -92,6 +109,12 @@ impl<'a> Bernard<'a> {
             }
             Some(drive) => {
                 let (changes, page_token) = self.fetch.changes(drive_id, &drive.page_token).await?;
+
+                // Do not perform database operation if no changes are available.
+                if page_token == drive.page_token {
+                    debug!(page_token = %page_token, "page token has not changed");
+                    return Ok(());
+                }
 
                 block_in_place(|| {
                     database::merge_changes(&self.conn, drive_id, changes, &page_token)
@@ -102,22 +125,31 @@ impl<'a> Bernard<'a> {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn remove_drive(&self, drive_id: &str) -> Result<()> {
         database::remove_drive(&self.conn, drive_id)?;
         Ok(())
     }
 
-    pub fn get_changelog(&self, drive_id: &str) -> Result<(Vec<ChangedFolder>, Vec<ChangedFile>)> {
+    #[tracing::instrument(skip(self))]
+    pub fn get_changed_folders(&self, drive_id: &str) -> Result<Vec<ChangedFolder>> {
         let changed_folders = database::get_changed_folders(&self.conn, drive_id)?;
-        let changed_files = database::get_changed_files(&self.conn, drive_id)?;
-        Ok((changed_folders, changed_files))
+        Ok(changed_folders)
     }
 
+    #[tracing::instrument(skip(self))]
+    pub fn get_changed_files(&self, drive_id: &str) -> Result<Vec<ChangedFile>> {
+        let changed_files = database::get_changed_files(&self.conn, drive_id)?;
+        Ok(changed_files)
+    }
+
+    #[tracing::instrument(skip(self))]
     pub fn get_changed_paths(&self, drive_id: &str) -> Result<Vec<ChangedPath>> {
         let changed_paths = database::get_changed_paths(&self.conn, drive_id)?;
         Ok(changed_paths)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_changed_folders_paths(
         &self,
         drive_id: &str,
@@ -129,6 +161,7 @@ impl<'a> Bernard<'a> {
             .map(|(folder, path)| (folder, Path::from(path).path)))
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_changed_files_paths(
         &self,
         drive_id: &str,

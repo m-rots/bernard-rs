@@ -1,0 +1,14 @@
+# Bernard
+*.db
+*.json
+
+# Rust
+/target
+
+# IDEs
+.idea/
+.vscode/
+
+# General
+.DS_Store
+*.env

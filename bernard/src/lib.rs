@@ -35,7 +35,7 @@ pub enum Error {
 impl From<database::Error> for Error {
     fn from(error: database::Error) -> Self {
         match error {
-            database::Error::DataIntegrity { .. } => Self::PartialChangeList { source: error },
+            database::Error::DataIntegrityError { .. } => Self::PartialChangeList { source: error },
             _ => Self::Database { source: error },
         }
     }
@@ -49,37 +49,33 @@ impl From<fetch::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone)]
-pub struct Bernard<'a> {
-    conn: Arc<SqliteConnection>,
-    fetch: Fetcher<'a>,
+pub struct Bernard {
+    conn: SqliteConnection,
+    fetch: Arc<Fetcher>,
 }
 
-impl<'a> Bernard<'a> {
-    pub fn builder(database_path: &'a str, account: &'a Account) -> BernardBuilder<'a> {
+impl Bernard {
+    pub fn builder<S: Into<String>>(database_path: S, account: Account) -> BernardBuilder {
         BernardBuilder::new(database_path, account)
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn fill_drive(&mut self, drive_id: &str) -> Result<()> {
-        let items = self.fetch.all_files(drive_id).await?;
+    async fn fill_drive(&self, drive_id: &str) -> Result<()> {
+        let items = self.fetch.clone().all_files(drive_id).await?;
         block_in_place(|| database::add_content(&self.conn, items))?;
 
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn initialise_drive(&mut self, drive_id: &str) -> Result<()> {
-        let page_token = self.fetch.start_page_token(drive_id).await?;
-        let name = self.fetch.drive_name(drive_id).await?;
+    async fn initialise_drive(&self, drive_id: &str) -> Result<()> {
+        let page_token = self.fetch.clone().start_page_token(drive_id).await?;
+        let name = self.fetch.clone().drive_name(drive_id).await?;
 
         block_in_place(|| database::add_drive(&self.conn, drive_id, &name, &page_token))?;
 
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
-    pub async fn add_drive(&mut self, drive_id: &str) -> Result<()> {
+    async fn add_drive(&self, drive_id: &str) -> Result<()> {
         self.initialise_drive(drive_id).await?;
         self.fill_drive(drive_id).await?;
         block_in_place(|| database::clear_changelog(&self.conn, drive_id))?;
@@ -88,8 +84,8 @@ impl<'a> Bernard<'a> {
     }
 
     /// Async wrapper of [clear_changelog](database::clear_changelog).
-    async fn clear_changelog(&self, drive_id: &str) -> Result<()> {
-        block_in_place(|| database::clear_changelog(&self.conn, drive_id)).map_err(|e| e.into())
+    pub async fn clear_changelog(&self, drive_id: &str) -> Result<()> {
+        block_in_place(|| database::clear_changelog(&self.conn, &drive_id).map_err(|e| e.into()))
     }
 
     /// Async wrapper of [get_drive](database::get_drive).
@@ -98,17 +94,24 @@ impl<'a> Bernard<'a> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn sync_drive(&mut self, drive_id: &str) -> Result<()> {
+    pub async fn sync_drive(&self, drive_id: &str) -> Result<()> {
         // Always clear changelog for consistent database state when sync_drive is called.
         self.clear_changelog(drive_id).await?;
         let drive = self.get_drive(drive_id).await?;
 
         match drive {
             None => {
-                self.add_drive(drive_id).await?;
+                debug!("starting full synchronisation");
+                self.add_drive(&drive_id).await?;
             }
             Some(drive) => {
-                let (changes, page_token) = self.fetch.changes(drive_id, &drive.page_token).await?;
+                debug!("starting partial synchronisation");
+
+                let (changes, page_token) = self
+                    .fetch
+                    .clone()
+                    .changes(&drive_id, &drive.page_token)
+                    .await?;
 
                 // Do not perform database operation if no changes are available.
                 if page_token == drive.page_token {
@@ -117,7 +120,7 @@ impl<'a> Bernard<'a> {
                 }
 
                 block_in_place(|| {
-                    database::merge_changes(&self.conn, drive_id, changes, &page_token)
+                    database::merge_changes(&self.conn, &drive_id, changes, &page_token)
                 })?;
             }
         };
@@ -174,26 +177,26 @@ impl<'a> Bernard<'a> {
     }
 }
 
-pub struct BernardBuilder<'a> {
-    database_path: &'a str,
-    fetch: FetchBuilder<'a>,
+pub struct BernardBuilder {
+    database_path: String,
+    fetch: FetchBuilder,
 }
 
-impl<'a> BernardBuilder<'a> {
-    pub fn new(database_path: &'a str, account: &'a Account) -> Self {
+impl BernardBuilder {
+    pub fn new<S: Into<String>>(database_path: S, account: Account) -> Self {
         Self {
-            database_path,
+            database_path: database_path.into(),
             fetch: Fetcher::builder(account),
         }
     }
 
-    pub async fn build(self) -> Result<Bernard<'a>> {
-        let conn = database::establish_connection(self.database_path)?;
+    pub async fn build(self) -> Result<Bernard> {
+        let conn = database::establish_connection(&self.database_path)?;
         database::run_migration(&conn)?;
 
         Ok(Bernard {
-            conn: Arc::new(conn),
-            fetch: self.fetch.build().await,
+            conn,
+            fetch: Arc::new(self.fetch.build().await),
         })
     }
 

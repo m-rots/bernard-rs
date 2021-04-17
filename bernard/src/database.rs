@@ -9,7 +9,8 @@ use diesel::result::Error as DieselError;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use snafu::{ResultExt, Snafu};
 use std::time::Instant;
-use tracing::{debug, trace};
+use tap::prelude::*;
+use tracing::{debug, error, trace};
 
 pub use diesel::sqlite::SqliteConnection;
 
@@ -25,22 +26,10 @@ pub enum Error {
         // Diesel's migration error is really ugly >:(
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    #[snafu(display("Could not upsert File `{}` in Drive `{}`", id, drive_id))]
-    FileUpsert {
-        id: String,
-        drive_id: String,
-        source: DieselError,
-    },
-    #[snafu(display("Could not upsert Folder `{}` in Drive `{}`", id, drive_id))]
-    FolderUpsert {
-        id: String,
-        drive_id: String,
-        source: DieselError,
-    },
     #[snafu(display("Unknown"))]
-    Unknown { source: DieselError },
+    UnknownError { source: DieselError },
     #[snafu(display("Failed to enforce database integrity"))]
-    DataIntegrity { source: DieselError },
+    DataIntegrityError { source: DieselError },
 }
 
 // TODO: Better match error kinds?
@@ -49,10 +38,10 @@ impl From<DieselError> for Error {
     fn from(source: DieselError) -> Self {
         match source {
             DieselError::DatabaseError(kind, _) => match kind {
-                DatabaseErrorKind::ForeignKeyViolation => Self::DataIntegrity { source },
-                _ => Self::Unknown { source },
+                DatabaseErrorKind::ForeignKeyViolation => Self::DataIntegrityError { source },
+                _ => Self::UnknownError { source },
             },
-            _ => Self::Unknown { source },
+            _ => Self::UnknownError { source },
         }
     }
 }
@@ -158,6 +147,7 @@ pub fn remove_drive(conn: &SqliteConnection, drive_id: &str) -> Result<()> {
     Ok(())
 }
 
+// refactor insert_into's into their own functions with instrument tracing
 pub fn add_content<I>(conn: &SqliteConnection, items: I) -> Result<()>
 where
     I: IntoIterator<Item = Item>,
@@ -184,22 +174,23 @@ where
     Ok(())
 }
 
+#[tracing::instrument(skip(conn, drive_id))]
 fn update_page_token(conn: &SqliteConnection, drive_id: &str, page_token: &str) -> Result<()> {
     use schema::drives;
 
     diesel::update(drives::table)
         .filter(drives::id.eq(drive_id))
         .set(drives::page_token.eq(page_token))
-        .execute(conn)?;
+        .execute(conn)
+        .tap_err(|error| error!(error = %error, "could not update page token"))
+        .tap_ok(|_| trace!("updated page token"))?;
 
     Ok(())
 }
 
-#[tracing::instrument(skip(conn, folder), fields(id = ?folder.id, parent = ?folder.parent))]
+#[tracing::instrument(skip(conn, folder), fields(?folder.id, ?folder.parent))]
 fn upsert_folder(conn: &SqliteConnection, folder: Folder) -> Result<()> {
     use schema::folders;
-
-    let Folder { id, drive_id, .. } = &folder;
 
     diesel::insert_into(folders::table)
         .values(&folder)
@@ -207,17 +198,15 @@ fn upsert_folder(conn: &SqliteConnection, folder: Folder) -> Result<()> {
         .do_update()
         .set(&folder)
         .execute(conn)
-        .context(FolderUpsert { id, drive_id })?;
+        .tap_err(|error| error!(error = %error, "could not upsert folder"))
+        .tap_ok(|_| trace!("upserted folder"))?;
 
-    trace!("upserted folder");
     Ok(())
 }
 
-#[tracing::instrument(skip(conn, file), fields(id = ?file.id, parent = ?file.parent))]
+#[tracing::instrument(skip(conn, file), fields(?file.id, ?file.parent))]
 fn upsert_file(conn: &SqliteConnection, file: File) -> Result<()> {
     use schema::files;
-
-    let File { id, drive_id, .. } = &file;
 
     diesel::insert_into(files::table)
         .values(&file)
@@ -225,13 +214,13 @@ fn upsert_file(conn: &SqliteConnection, file: File) -> Result<()> {
         .do_update()
         .set(&file)
         .execute(conn)
-        .context(FileUpsert { id, drive_id })?;
+        .tap_err(|error| error!(error = %error, "could not upsert file"))
+        .tap_ok(|_| trace!("upserted file"))?;
 
-    trace!("upserted file");
     Ok(())
 }
 
-#[tracing::instrument(skip(conn, drive), fields(id = ?drive.id, name = ?drive.name))]
+#[tracing::instrument(skip(conn, drive), fields(?drive.id, ?drive.name))]
 fn update_drive_name(conn: &SqliteConnection, drive: PartialDrive) -> Result<()> {
     use schema::folders;
 
@@ -282,7 +271,7 @@ where
 {
     let start = Instant::now();
 
-    conn.transaction::<_, Error, _>(|| {
+    let result = conn.transaction::<_, Error, _>(|| {
         // First update the page_token
         update_page_token(conn, drive_id, page_token)?;
 
@@ -304,12 +293,25 @@ where
             }
         }
 
-        trace!("end of transaction");
         Ok(())
-    })?;
+    });
 
-    debug!(duration = ?start.elapsed(), "changes merged");
-    Ok(())
+    match result {
+        Ok(()) => {
+            debug!(duration = ?start.elapsed(), "changes merged");
+            Ok(())
+        }
+        Err(error) => {
+            error!(error = %error, "transaction failed");
+
+            conn.transaction_manager()
+                .rollback_transaction(conn)
+                .tap_err(|error| error!(error = %error, "failed to rollback the transaction"))
+                .tap_ok(|_| debug!("successfully rolled the transaction back"))?;
+
+            Err(error)
+        }
+    }
 }
 
 pub fn add_drive(conn: &SqliteConnection, id: &str, name: &str, page_token: &str) -> Result<()> {

@@ -3,9 +3,30 @@ use clap::{App, Arg};
 use colored::*;
 use shadow_rs::shadow;
 use std::path::PathBuf;
+use tokio::time::{sleep, Duration};
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 
 shadow!(build);
+
+async fn retry_sync(bernard: &Bernard, drive_id: &str) -> bernard::Result<()> {
+    loop {
+        let result = bernard.sync_drive(drive_id).await;
+
+        match result {
+            Err(error) => match error {
+                bernard::Error::PartialChangeList { .. } => {
+                    warn!(%drive_id, "received a Partial Change Set, retrying in 5 seconds");
+                    sleep(Duration::from_secs(5)).await;
+                    debug!(%drive_id, "attempting retry");
+                    continue;
+                }
+                _ => return Err(error),
+            },
+            Ok(()) => return Ok(()),
+        };
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -54,9 +75,8 @@ async fn main() -> anyhow::Result<()> {
                 .value_name("URL")
                 .about("Proxy URL to use for debugging"),
         )
-        .subcommand(App::new("reset").about("Combination of remove + init"))
+        .subcommand(App::new("reset").about("Reset and sync the drive"))
         .subcommand(App::new("remove").about("Remove a Shared Drive from the database"))
-        .subcommand(App::new("add").about("Add Shared Drive (init + fill)"))
         .get_matches();
 
     // Defaults to "bernard-testing.db" so can unwrap
@@ -69,38 +89,29 @@ async fn main() -> anyhow::Result<()> {
     let account_file_name = matches.value_of("account").unwrap();
     let account = Account::from_file(account_file_name);
 
-    let mut bernard = Bernard::builder(database_path, &account);
+    let mut bernard = Bernard::builder(database_path, account);
 
     if let Some(proxy) = matches.value_of("proxy") {
         bernard = bernard.proxy(proxy);
     }
 
-    let mut bernard = bernard.build().await?;
+    let bernard = bernard.build().await?;
 
     match matches.subcommand() {
-        Some(("reset", _)) => {
-            bernard.remove_drive(drive_id)?;
-            bernard.add_drive(drive_id).await?;
-        }
         Some(("remove", _)) => {
             bernard.remove_drive(drive_id)?;
         }
-        Some(("add", _)) => {
-            bernard.add_drive(drive_id).await?;
+        Some(("reset", _)) => {
+            bernard.remove_drive(drive_id)?;
+            retry_sync(&bernard, drive_id).await?;
         }
         None => {
-            let result = bernard.sync_drive(drive_id).await;
-            match result {
-                Err(error) => match error {
-                    _ => return Err(error.into()),
-                },
-                Ok(()) => {
-                    let folders = bernard.get_changed_folders_paths(drive_id)?;
-                    let files = bernard.get_changed_files_paths(drive_id)?;
+            retry_sync(&bernard, drive_id).await?;
 
-                    list_changes(folders, files);
-                }
-            }
+            let folders = bernard.get_changed_folders_paths(drive_id)?;
+            let files = bernard.get_changed_files_paths(drive_id)?;
+
+            list_changes(folders, files);
         }
         _ => (),
     }

@@ -1,8 +1,9 @@
 use super::{Change, Fetcher, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-impl<'a> Fetcher<'a> {
-    pub async fn start_page_token(&mut self, drive_id: &str) -> Result<String> {
+impl Fetcher {
+    pub async fn start_page_token(self: Arc<Fetcher>, drive_id: &str) -> Result<String> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Query<'a> {
@@ -34,9 +35,9 @@ impl<'a> Fetcher<'a> {
     }
 }
 
-impl<'a> Fetcher<'a> {
+impl Fetcher {
     pub async fn changes(
-        &mut self,
+        self: Arc<Fetcher>,
         drive_id: &str,
         page_token: &str,
     ) -> Result<(Vec<Change>, String)> {
@@ -66,23 +67,25 @@ impl<'a> Fetcher<'a> {
         let mut page_token = page_token.to_string();
 
         loop {
+            let fetcher = self.clone();
+
             let query = Query {
                 drive_id,
                 page_token: &page_token,
 
                 fields: "nextPageToken,newStartPageToken,changes(driveId,fileId,removed,drive(id,name),file(id,driveId,name,parents,md5Checksum,size,trashed))",
-                page_size: 50, // TODO: set to 1000
+                page_size: 1000,
 
                 all_drives: true,
                 supports_all_drives: true,
             };
 
-            let request = self
+            let request = fetcher
                 .client
                 .get("https://www.googleapis.com/drive/v3/changes")
                 .query(&query);
 
-            let response: Response = self.make_request(request).await?;
+            let response: Response = fetcher.make_request(request).await?;
 
             all_changes.extend(response.changes);
 

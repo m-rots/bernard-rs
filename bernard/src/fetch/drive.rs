@@ -1,8 +1,9 @@
 use super::{Fetcher, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-impl<'a> Fetcher<'a> {
-    pub async fn drive_name(&mut self, drive_id: &str) -> Result<String> {
+impl Fetcher {
+    pub async fn drive_name(self: Arc<Fetcher>, drive_id: &str) -> Result<String> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Query<'a> {

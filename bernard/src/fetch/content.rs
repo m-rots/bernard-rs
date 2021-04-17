@@ -1,8 +1,9 @@
 use super::{Fetcher, Item, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-impl<'a> Fetcher<'a> {
-    pub async fn all_files(&mut self, drive_id: &str) -> Result<Vec<Item>> {
+impl Fetcher {
+    pub async fn all_files(self: Arc<Fetcher>, drive_id: &str) -> Result<Vec<Item>> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Query<'a> {
@@ -30,24 +31,26 @@ impl<'a> Fetcher<'a> {
         let mut page_token = None;
 
         loop {
+            let fetcher = self.clone();
+
             let query = Query {
                 drive_id,
                 page_token,
 
                 fields: "nextPageToken,files(id,driveId,name,parents,md5Checksum,size,trashed)",
-                page_size: 50, // TODO: set to 1000
+                page_size: 1000,
 
                 corpora: "drive",
                 all_drives: true,
                 supports_all_drives: true,
             };
 
-            let request = self
+            let request = fetcher
                 .client
                 .get("https://www.googleapis.com/drive/v3/files")
                 .query(&query);
 
-            let response: Response = self.make_request(request).await?;
+            let response: Response = fetcher.make_request(request).await?;
 
             all_items.extend(response.items);
             page_token = response.next_page_token;

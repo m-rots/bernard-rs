@@ -5,8 +5,9 @@ use reqwest::{Client, ClientBuilder, IntoUrl, StatusCode};
 use serde::de::Deserializer;
 use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
-use std::sync::{Arc, Mutex};
-use tracing::trace;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::debug;
 
 mod changes;
 mod content;
@@ -42,29 +43,27 @@ fn handle_error_response(source: reqwest::Error) -> Error {
 
 fn to_backoff_error(error: Error) -> backoff::Error<Error> {
     match error {
-        Error::ConnectionError { source } => {
-            backoff::Error::Transient(Error::ConnectionError { source })
-        }
+        Error::ConnectionError { .. } => backoff::Error::Transient(error),
         _ => backoff::Error::Permanent(error),
     }
 }
 
-#[derive(Clone)]
-pub struct Fetcher<'a> {
-    account: &'a Account,
+pub struct Fetcher {
+    account: Account,
     client: Client,
-    refresh_token: Arc<Mutex<RefreshToken>>,
+    // using tokio::sync::Mutex as deadlock otherwise occurs
+    refresh_token: Mutex<RefreshToken>,
 }
 
-impl<'a> Fetcher<'a> {
-    pub async fn new(client: Client, account: &'a Account) -> Fetcher<'a> {
+impl Fetcher {
+    pub async fn new(client: Client, account: Account) -> Fetcher {
         let scope = Scope::builder()
             .scope("https://www.googleapis.com/auth/drive.readonly")
             .lifetime(Duration::hours(1))
             .build();
 
-        let refresh_token = RefreshToken::new(account, scope).await;
-        let refresh_token = Arc::new(Mutex::new(refresh_token));
+        let refresh_token = RefreshToken::new(&account, scope).await;
+        let refresh_token = Mutex::new(refresh_token);
 
         Self {
             client,
@@ -73,44 +72,54 @@ impl<'a> Fetcher<'a> {
         }
     }
 
-    pub fn builder(account: &'a Account) -> FetchBuilder<'a> {
+    pub fn builder(account: Account) -> FetchBuilder {
         FetchBuilder::new(account)
     }
 
-    async fn make_request_inner<T>(&self, request: reqwest::RequestBuilder) -> Result<T>
+    async fn make_request_inner<T>(
+        self: Arc<Fetcher>,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: serde::de::DeserializeOwned + Send + 'static,
     {
-        let mut refresh_token = self.refresh_token.lock().unwrap();
-        let AccessToken { token, .. } = refresh_token.access_token(&self.account).await;
+        let handle = tokio::spawn(async move {
+            let mut refresh_token = self.refresh_token.lock().await;
+            let AccessToken { token, .. } = refresh_token.access_token(&self.account).await;
 
-        let request = request.bearer_auth(token).build().unwrap();
+            let request = request.bearer_auth(token).build().unwrap();
+            // Early drop required as the refresh_token is otherwise cleared AFTER the request.
+            drop(refresh_token);
 
-        trace!(url_path = %request.url().path(), "making request");
+            debug!(url_path = %request.url().path(), "making request");
 
-        let response: T = self
-            .client
-            .execute(request)
-            .await
-            .context(ConnectionError)?
-            .error_for_status()
-            .map_err(|e| handle_error_response(e))?
-            .json()
-            .await
-            .context(DeserialisationError)?;
+            let response: T = self
+                .client
+                .execute(request)
+                .await
+                .context(ConnectionError)?
+                .error_for_status()
+                .map_err(|e| handle_error_response(e))?
+                .json()
+                .await
+                .context(DeserialisationError)?;
 
-        Ok(response)
+            Ok(response)
+        });
+
+        handle.await.unwrap()
     }
 
-    async fn make_request<T>(&self, request: reqwest::RequestBuilder) -> Result<T>
+    async fn make_request<T>(self: Arc<Fetcher>, request: reqwest::RequestBuilder) -> Result<T>
     where
-        T: serde::de::DeserializeOwned,
+        T: serde::de::DeserializeOwned + Send + 'static,
     {
         let response: T = backoff::future::retry(backoff::ExponentialBackoff::default(), || {
             let request = request.try_clone().expect("Could not clone request");
 
             async {
                 let response: T = self
+                    .clone()
                     .make_request_inner(request)
                     .await
                     .map_err(to_backoff_error)?;
@@ -124,20 +133,20 @@ impl<'a> Fetcher<'a> {
     }
 }
 
-pub struct FetchBuilder<'a> {
-    account: &'a Account,
+pub struct FetchBuilder {
+    account: Account,
     client: ClientBuilder,
 }
 
-impl<'a> FetchBuilder<'a> {
-    pub fn new(account: &'a Account) -> Self {
+impl FetchBuilder {
+    pub fn new(account: Account) -> Self {
         Self {
             client: ClientBuilder::new(),
             account,
         }
     }
 
-    pub async fn build(self) -> Fetcher<'a> {
+    pub async fn build(self) -> Fetcher {
         let client = self.client.build().unwrap();
 
         Fetcher::new(client, self.account).await

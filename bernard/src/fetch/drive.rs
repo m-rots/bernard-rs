@@ -26,7 +26,7 @@ impl Fetcher {
             ))
             .query(&query);
 
-        let Response { name } = self.make_request(request).await?;
+        let Response { name } = self.with_retry(request).await?;
 
         Ok(name)
     }

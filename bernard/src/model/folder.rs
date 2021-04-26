@@ -1,5 +1,5 @@
 use crate::schema::*;
-use diesel::{sqlite::Sqlite, Queryable};
+use diesel::{query_dsl::methods::FilterDsl, sqlite::Sqlite, ExpressionMethods, Queryable};
 
 #[derive(Debug, Insertable, AsChangeset, Queryable)]
 #[table_name = "folders"]
@@ -25,6 +25,19 @@ pub struct NewFolder<'a> {
 pub enum ChangedFolder {
     Created(Folder),
     Deleted(Folder),
+}
+
+type WithDrive<'a> = diesel::dsl::Eq<folder_changelog::drive_id, &'a str>;
+type ByDrive<'a> = diesel::dsl::Filter<folder_changelog::table, WithDrive<'a>>;
+
+impl ChangedFolder {
+    pub(crate) fn with_drive(drive_id: &str) -> WithDrive<'_> {
+        folder_changelog::drive_id.eq(drive_id)
+    }
+
+    pub(crate) fn by_drive(drive_id: &str) -> ByDrive<'_> {
+        folder_changelog::table.filter(Self::with_drive(drive_id))
+    }
 }
 
 impl From<ChangedFolder> for Folder {

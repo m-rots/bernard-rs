@@ -31,7 +31,7 @@ impl Fetcher {
         let mut page_token = None;
 
         loop {
-            let fetcher = self.clone();
+            let fetch = self.clone();
 
             let query = Query {
                 drive_id,
@@ -45,12 +45,12 @@ impl Fetcher {
                 supports_all_drives: true,
             };
 
-            let request = fetcher
+            let request = fetch
                 .client
                 .get("https://www.googleapis.com/drive/v3/files")
                 .query(&query);
 
-            let response: Response = fetcher.make_request(request).await?;
+            let response: Response = fetch.with_retry(request).await?;
 
             all_items.extend(response.items);
             page_token = response.next_page_token;

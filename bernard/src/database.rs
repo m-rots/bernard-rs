@@ -147,33 +147,6 @@ pub fn remove_drive(conn: &SqliteConnection, drive_id: &str) -> Result<()> {
     Ok(())
 }
 
-// refactor insert_into's into their own functions with instrument tracing
-pub fn add_content<I>(conn: &SqliteConnection, items: I) -> Result<()>
-where
-    I: IntoIterator<Item = Item>,
-{
-    conn.transaction::<_, Error, _>(|| {
-        for item in items {
-            match item {
-                Item::File(file) => {
-                    diesel::insert_into(schema::files::table)
-                        .values(file)
-                        .execute(conn)?;
-                }
-                Item::Folder(folder) => {
-                    diesel::insert_into(schema::folders::table)
-                        .values(folder)
-                        .execute(conn)?;
-                }
-            }
-        }
-
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
 #[tracing::instrument(skip(conn, drive_id))]
 fn update_page_token(conn: &SqliteConnection, drive_id: &str, page_token: &str) -> Result<()> {
     use schema::drives;
@@ -314,7 +287,16 @@ where
     }
 }
 
-pub fn add_drive(conn: &SqliteConnection, id: &str, name: &str, page_token: &str) -> Result<()> {
+pub fn add_drive<I>(
+    conn: &SqliteConnection,
+    id: &str,
+    name: &str,
+    page_token: &str,
+    items: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = Item>,
+{
     conn.transaction::<_, Error, _>(|| {
         diesel::insert_into(schema::drives::table)
             .values(NewDrive { id, page_token })
@@ -329,6 +311,21 @@ pub fn add_drive(conn: &SqliteConnection, id: &str, name: &str, page_token: &str
                 trashed: false,
             })
             .execute(conn)?;
+
+        for item in items {
+            match item {
+                Item::File(file) => {
+                    diesel::insert_into(schema::files::table)
+                        .values(file)
+                        .execute(conn)?;
+                }
+                Item::Folder(folder) => {
+                    diesel::insert_into(schema::folders::table)
+                        .values(folder)
+                        .execute(conn)?;
+                }
+            }
+        }
 
         Ok(())
     })
@@ -380,8 +377,7 @@ pub fn get_changed_folders_paths(
 
     let start = Instant::now();
 
-    let changed_folders = folders::table
-        .filter(folders::drive_id.eq(drive_id))
+    let changed_folders = ChangedFolder::by_drive(drive_id)
         .inner_join(
             paths::table.on(paths::id.eq(folders::id).and(
                 paths::drive_id

@@ -1,17 +1,21 @@
-use crate::auth::{AccessToken, Account, RefreshToken, Scope};
 use crate::model::{File, Folder};
+use crate::Account;
+use auth::{AccessToken, RefreshToken, Scope};
 use chrono::Duration;
 use reqwest::{Client, ClientBuilder, IntoUrl, StatusCode};
 use serde::de::Deserializer;
 use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::debug;
+use tap::prelude::*;
+use tracing::{debug, error, warn};
+use tracing_futures::Instrument;
 
+mod auth;
 mod changes;
 mod content;
 mod drive;
+mod page_token;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -26,24 +30,18 @@ pub enum Error {
     #[snafu(display("Invalid Service Account Credentials"))]
     InvalidCredentials { backtrace: Backtrace },
     #[snafu(display("An unknown error occured!"))]
-    UnknownError { source: reqwest::Error },
+    UnknownStatus { status: StatusCode },
+    #[snafu(display("The Google Drive API is having some issues"))]
+    ServerError { status: StatusCode },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn handle_error_response(source: reqwest::Error) -> Error {
-    match source.status() {
-        Some(StatusCode::UNAUTHORIZED) => InvalidCredentials.build(),
-        Some(StatusCode::FORBIDDEN) => ApiNotEnabled.build(),
-        Some(StatusCode::NOT_FOUND) => DriveNotFound.build(),
-        Some(status) if status.is_server_error() => Error::ConnectionError { source },
-        _ => Error::UnknownError { source },
-    }
-}
-
 fn to_backoff_error(error: Error) -> backoff::Error<Error> {
     match error {
-        Error::ConnectionError { .. } => backoff::Error::Transient(error),
+        Error::ConnectionError { .. } | Error::ServerError { .. } => {
+            backoff::Error::Transient(error)
+        }
         _ => backoff::Error::Permanent(error),
     }
 }
@@ -51,19 +49,17 @@ fn to_backoff_error(error: Error) -> backoff::Error<Error> {
 pub struct Fetcher {
     account: Account,
     client: Client,
-    // using tokio::sync::Mutex as deadlock otherwise occurs
-    refresh_token: Mutex<RefreshToken>,
+    refresh_token: RefreshToken,
 }
 
 impl Fetcher {
-    pub async fn new(client: Client, account: Account) -> Fetcher {
+    pub fn new(client: Client, account: Account) -> Fetcher {
         let scope = Scope::builder()
             .scope("https://www.googleapis.com/auth/drive.readonly")
             .lifetime(Duration::hours(1))
             .build();
 
-        let refresh_token = RefreshToken::new(&account, scope).await;
-        let refresh_token = Mutex::new(refresh_token);
+        let refresh_token = RefreshToken::new(scope);
 
         Self {
             client,
@@ -76,60 +72,85 @@ impl Fetcher {
         FetchBuilder::new(account)
     }
 
-    async fn make_request_inner<T>(
-        self: Arc<Fetcher>,
-        request: reqwest::RequestBuilder,
-    ) -> Result<T>
+    async fn with_auth<T>(self: Arc<Fetcher>, request: reqwest::RequestBuilder) -> Result<T>
     where
-        T: serde::de::DeserializeOwned + Send + 'static,
+        T: serde::de::DeserializeOwned,
     {
-        let handle = tokio::spawn(async move {
-            let mut refresh_token = self.refresh_token.lock().await;
-            let AccessToken { token, .. } = refresh_token.access_token(&self.account).await;
+        let AccessToken { token, .. } = self.refresh_token.access_token(self.clone()).await?;
 
-            let request = request.bearer_auth(token).build().unwrap();
-            // Early drop required as the refresh_token is otherwise cleared AFTER the request.
-            drop(refresh_token);
+        let request = request.bearer_auth(token).build().unwrap();
 
-            debug!(url_path = %request.url().path(), "making request");
-
-            let response: T = self
-                .client
-                .execute(request)
-                .await
-                .context(ConnectionError)?
-                .error_for_status()
-                .map_err(|e| handle_error_response(e))?
-                .json()
-                .await
-                .context(DeserialisationError)?;
-
-            Ok(response)
-        });
-
-        handle.await.unwrap()
+        self.make_request_inner(request).await
     }
 
-    async fn make_request<T>(self: Arc<Fetcher>, request: reqwest::RequestBuilder) -> Result<T>
+    async fn make_request_inner<T>(self: Arc<Fetcher>, request: reqwest::Request) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        debug!(url_path = %request.url().path(), "making request");
+
+        let response = self
+            .client
+            .execute(request)
+            .await
+            .context(ConnectionError)?;
+
+        let status = response.status();
+        if status.is_success() {
+            let response: T = response.json().await.context(DeserialisationError)?;
+            return Ok(response);
+        }
+
+        if status.is_server_error() {
+            return Err(ServerError { status }.build());
+        }
+
+        let error = match status {
+            StatusCode::NOT_FOUND => DriveNotFound.build(),
+            StatusCode::FORBIDDEN => {
+                // TODO: Decode request to figure out whether it is a rate limit error
+                ApiNotEnabled.build()
+            }
+            StatusCode::UNAUTHORIZED => InvalidCredentials.build(),
+            _ => Error::UnknownStatus { status },
+        };
+
+        Err(error)
+    }
+
+    async fn with_retry<T>(self: Arc<Fetcher>, request: reqwest::RequestBuilder) -> Result<T>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
-        let response: T = backoff::future::retry(backoff::ExponentialBackoff::default(), || {
-            let request = request.try_clone().expect("Could not clone request");
+        let future = async move {
+            let response: T =
+                backoff::future::retry(backoff::ExponentialBackoff::default(), || {
+                    let request = request.try_clone().expect("Could not clone request");
 
-            async {
-                let response: T = self
-                    .clone()
-                    .make_request_inner(request)
-                    .await
-                    .map_err(to_backoff_error)?;
+                    async {
+                        let response: T = self
+                            .clone()
+                            .with_auth(request)
+                            .await
+                            .map_err(to_backoff_error)
+                            .tap_err(|error| match error {
+                                backoff::Error::Permanent(error) => {
+                                    error!(%error, "non-retryable error occured")
+                                }
+                                backoff::Error::Transient(error) => {
+                                    warn!(%error, "retryable error occured")
+                                }
+                            })?;
 
-                Ok(response)
-            }
-        })
-        .await?;
+                        Ok(response)
+                    }
+                })
+                .await?;
 
-        Ok(response)
+            Ok(response)
+        };
+
+        tokio::spawn(future.in_current_span()).await.unwrap()
     }
 }
 
@@ -146,14 +167,14 @@ impl FetchBuilder {
         }
     }
 
-    pub async fn build(self) -> Fetcher {
+    pub fn build(self) -> Fetcher {
         let client = self.client.build().unwrap();
 
-        Fetcher::new(client, self.account).await
+        Fetcher::new(client, self.account)
     }
 
-    pub fn proxy<S: IntoUrl>(mut self, proxy: S) -> Self {
-        let proxy = reqwest::Proxy::all(proxy).unwrap();
+    pub fn proxy<U: IntoUrl>(mut self, url: U) -> Self {
+        let proxy = reqwest::Proxy::all(url).unwrap();
 
         self.client = self.client.proxy(proxy);
         self

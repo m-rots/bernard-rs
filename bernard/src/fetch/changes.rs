@@ -3,39 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 impl Fetcher {
-    pub async fn start_page_token(self: Arc<Fetcher>, drive_id: &str) -> Result<String> {
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Query<'a> {
-            drive_id: &'a str,
-            fields: &'a str,
-            supports_all_drives: bool,
-        }
-
-        #[derive(Debug, Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Response {
-            start_page_token: String,
-        }
-
-        let query = Query {
-            drive_id,
-            fields: "startPageToken",
-            supports_all_drives: true,
-        };
-
-        let request = self
-            .client
-            .get("https://www.googleapis.com/drive/v3/changes/startPageToken")
-            .query(&query);
-
-        let Response { start_page_token } = self.make_request(request).await?;
-
-        Ok(start_page_token)
-    }
-}
-
-impl Fetcher {
     pub async fn changes(
         self: Arc<Fetcher>,
         drive_id: &str,
@@ -67,7 +34,7 @@ impl Fetcher {
         let mut page_token = page_token.to_string();
 
         loop {
-            let fetcher = self.clone();
+            let fetch = self.clone();
 
             let query = Query {
                 drive_id,
@@ -80,12 +47,12 @@ impl Fetcher {
                 supports_all_drives: true,
             };
 
-            let request = fetcher
+            let request = fetch
                 .client
                 .get("https://www.googleapis.com/drive/v3/changes")
                 .query(&query);
 
-            let response: Response = fetcher.make_request(request).await?;
+            let response: Response = fetch.with_retry(request).await?;
 
             all_changes.extend(response.changes);
 

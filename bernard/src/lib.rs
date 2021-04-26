@@ -1,19 +1,19 @@
 #[macro_use]
 extern crate diesel;
 
-use auth::Account;
 use database::SqliteConnection;
 use fetch::{FetchBuilder, Fetcher};
+use jsonwebtoken::EncodingKey;
 use model::Drive;
 use reqwest::IntoUrl;
-use snafu::Snafu;
+use serde::Deserialize;
+use snafu::{ResultExt, Snafu};
+use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::task::block_in_place;
 use tracing::debug;
 
-// TODO: Make auth its own crate + errors
-pub mod auth;
 mod database;
 mod fetch;
 mod model;
@@ -30,6 +30,17 @@ pub enum Error {
     Network { source: fetch::Error },
     #[snafu(display("Received a partial change list from Google"))]
     PartialChangeList { source: database::Error },
+
+    #[snafu(display("Cannot read the Service Account JWK file: {:?}", file_name))]
+    WhereIsJWK {
+        file_name: PathBuf,
+        source: std::io::Error,
+    },
+    #[snafu(display("Invalid Service Account JWK file: {:?}", file_name))]
+    InvalidJWK {
+        file_name: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 impl From<database::Error> for Error {
@@ -54,31 +65,25 @@ pub struct Bernard {
     fetch: Arc<Fetcher>,
 }
 
+// TODO: Better names
+pub enum SyncKind {
+    Full,
+    Partial,
+}
+
 impl Bernard {
     pub fn builder<S: Into<String>>(database_path: S, account: Account) -> BernardBuilder {
         BernardBuilder::new(database_path, account)
     }
 
-    async fn fill_drive(&self, drive_id: &str) -> Result<()> {
-        let items = self.fetch.clone().all_files(drive_id).await?;
-        block_in_place(|| database::add_content(&self.conn, items))?;
-
-        Ok(())
-    }
-
-    async fn initialise_drive(&self, drive_id: &str) -> Result<()> {
-        let page_token = self.fetch.clone().start_page_token(drive_id).await?;
-        let name = self.fetch.clone().drive_name(drive_id).await?;
-
-        block_in_place(|| database::add_drive(&self.conn, drive_id, &name, &page_token))?;
-
-        Ok(())
-    }
-
     async fn add_drive(&self, drive_id: &str) -> Result<()> {
-        self.initialise_drive(drive_id).await?;
-        self.fill_drive(drive_id).await?;
-        block_in_place(|| database::clear_changelog(&self.conn, drive_id))?;
+        let page_token = self.fetch.clone().start_page_token(drive_id).await?;
+
+        // Might want to sleep between page_token and items
+        let name = self.fetch.clone().drive_name(drive_id).await?;
+        let items = self.fetch.clone().all_files(drive_id).await?;
+
+        block_in_place(|| database::add_drive(&self.conn, drive_id, &name, &page_token, items))?;
 
         Ok(())
     }
@@ -94,7 +99,7 @@ impl Bernard {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn sync_drive(&self, drive_id: &str) -> Result<()> {
+    pub async fn sync_drive(&self, drive_id: &str) -> Result<SyncKind> {
         // Always clear changelog for consistent database state when sync_drive is called.
         self.clear_changelog(drive_id).await?;
         let drive = self.get_drive(drive_id).await?;
@@ -103,29 +108,35 @@ impl Bernard {
             None => {
                 debug!("starting full synchronisation");
                 self.add_drive(&drive_id).await?;
+
+                Ok(SyncKind::Full)
             }
             Some(drive) => {
                 debug!("starting partial synchronisation");
 
-                let (changes, page_token) = self
+                let (changes, new_page_token) = self
                     .fetch
                     .clone()
                     .changes(&drive_id, &drive.page_token)
                     .await?;
 
-                // Do not perform database operation if no changes are available.
-                if page_token == drive.page_token {
-                    debug!(page_token = %page_token, "page token has not changed");
-                    return Ok(());
-                }
+                match new_page_token == drive.page_token {
+                    // Do not perform database operation if no changes are available.
+                    true => {
+                        debug!(page_token = %new_page_token, "page token has not changed");
+                    }
+                    false => {
+                        debug!(page_token = %new_page_token, "page token has changed");
 
-                block_in_place(|| {
-                    database::merge_changes(&self.conn, &drive_id, changes, &page_token)
-                })?;
+                        block_in_place(|| {
+                            database::merge_changes(&self.conn, &drive_id, changes, &new_page_token)
+                        })?;
+                    }
+                };
+
+                Ok(SyncKind::Partial)
             }
-        };
-
-        Ok(())
+        }
     }
 
     #[tracing::instrument(skip(self))]
@@ -190,18 +201,49 @@ impl BernardBuilder {
         }
     }
 
-    pub async fn build(self) -> Result<Bernard> {
+    pub fn build(self) -> Result<Bernard> {
         let conn = database::establish_connection(&self.database_path)?;
         database::run_migration(&conn)?;
 
         Ok(Bernard {
             conn,
-            fetch: Arc::new(self.fetch.build().await),
+            fetch: Arc::new(self.fetch.build()),
         })
     }
 
     pub fn proxy<U: IntoUrl>(mut self, url: U) -> Self {
         self.fetch = self.fetch.proxy(url);
         self
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "String")]
+struct PrivateKey(EncodingKey);
+
+impl TryFrom<String> for PrivateKey {
+    type Error = jsonwebtoken::errors::Error;
+
+    fn try_from(key: String) -> std::result::Result<Self, Self::Error> {
+        let key = EncodingKey::from_rsa_pem(key.as_ref())?;
+        Ok(Self(key))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Account {
+    client_email: String,
+    private_key: PrivateKey,
+}
+
+impl Account {
+    pub fn from_file<P: AsRef<std::path::Path>>(file_name: P) -> Result<Self> {
+        let file = std::fs::File::open(file_name.as_ref()).context(WhereIsJWK {
+            file_name: file_name.as_ref(),
+        })?;
+
+        serde_json::from_reader(std::io::BufReader::new(file)).context(InvalidJWK {
+            file_name: file_name.as_ref(),
+        })
     }
 }

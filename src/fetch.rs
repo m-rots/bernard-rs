@@ -8,8 +8,7 @@ use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
 use std::sync::Arc;
 use tap::prelude::*;
-use tracing::{debug, error, warn};
-use tracing_futures::Instrument;
+use tracing::{error, trace, warn, Instrument};
 
 mod auth;
 mod changes;
@@ -62,8 +61,8 @@ impl Fetcher {
         let refresh_token = RefreshToken::new(scope);
 
         Self {
-            client,
             account,
+            client,
             refresh_token,
         }
     }
@@ -87,7 +86,7 @@ impl Fetcher {
     where
         T: serde::de::DeserializeOwned,
     {
-        debug!(url_path = %request.url().path(), "making request");
+        trace!(url_path = %request.url().path(), "making request");
 
         let response = self
             .client
@@ -188,7 +187,7 @@ pub enum Item {
 }
 
 impl Item {
-    pub fn drive_id<'a>(&'a self) -> &'a str {
+    pub fn drive_id(&self) -> &'_ str {
         match self {
             Item::File(file) => &file.drive_id,
             Item::Folder(folder) => &folder.drive_id,
@@ -202,12 +201,12 @@ impl Item {
         }
     }
 
-    pub fn id<'a>(&'a self) -> &'a str {
-        match self {
-            Item::File(file) => &file.id,
-            Item::Folder(folder) => &folder.id,
-        }
-    }
+    // pub fn id(&self) -> &'_ str {
+    //     match self {
+    //         Item::File(file) => &file.id,
+    //         Item::Folder(folder) => &folder.id,
+    //     }
+    // }
 }
 
 // Custom deserializer for Item to parse into the correct enum variant.
@@ -255,8 +254,8 @@ impl<'de> Deserialize<'de> for Item {
                 id,
                 drive_id,
                 name,
-                parent,
                 trashed,
+                parent,
             })),
         }
     }

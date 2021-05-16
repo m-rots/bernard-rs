@@ -102,7 +102,7 @@ impl RefreshToken {
         }
     }
 
-    pub(crate) async fn access_token<'a>(&'a self, fetch: Arc<Fetcher>) -> Result<AccessToken> {
+    pub(crate) async fn access_token(&self, fetch: Arc<Fetcher>) -> Result<AccessToken> {
         let mut token_guard = self.token.lock().await;
 
         // Pretend that we are 10 seconds in the future to prevent possible errors.

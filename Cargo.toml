@@ -1,4 +1,31 @@
-[workspace]
-members = [
-    "bernard"
-]
+[package]
+name = "bernard"
+version = "0.1.0"
+authors = ["Storm Timmermans <stormtimmermans@icloud.com>"]
+edition = "2018"
+build = "build.rs"
+
+[dependencies]
+backoff = { version = "0.3", features = ["tokio"] }
+chrono = { version="0.4", features = ["serde"] }
+itertools = "0.10"
+jsonwebtoken = "7"
+futures = "0.3"
+reqwest = { version = "0.11", features = ["json"] }
+ring = "0.16.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snafu = "0.6"
+sqlx = { version = "0.5", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+tap = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+[build-dependencies]
+sqlx = { version = "0.5", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+anyhow = "1"
+clap = "3.0.0-beta.2"
+tracing-subscriber = "0.2"

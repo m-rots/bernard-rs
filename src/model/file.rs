@@ -1,6 +1,7 @@
 use crate::database::{Connection, Pool};
 use futures::prelude::*;
 use sqlx::Result;
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct File {
@@ -33,6 +34,7 @@ impl File {
         .execute(conn)
         .await?;
 
+        trace!(id = %self.id, "created file");
         Ok(())
     }
 
@@ -61,6 +63,7 @@ impl File {
         .execute(conn)
         .await?;
 
+        trace!(id = %self.id, "upserted file");
         Ok(())
     }
 
@@ -73,6 +76,7 @@ impl File {
         .execute(conn)
         .await?;
 
+        trace!(id = %id, "deleted file");
         Ok(())
     }
 }
@@ -141,6 +145,7 @@ impl ChangedFile {
             .execute(pool)
             .await?;
 
+        trace!("cleared file changelog");
         Ok(())
     }
 }

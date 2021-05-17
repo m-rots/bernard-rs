@@ -1,6 +1,7 @@
 use crate::database::{Connection, Pool};
 use futures::prelude::*;
 use sqlx::Result;
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct Folder {
@@ -29,6 +30,7 @@ impl Folder {
         .execute(conn)
         .await?;
 
+        trace!(id = %self.id, "created folder");
         Ok(())
     }
 
@@ -53,6 +55,7 @@ impl Folder {
         .execute(conn)
         .await?;
 
+        trace!(id = %self.id, "upserted folder");
         Ok(())
     }
 
@@ -65,6 +68,7 @@ impl Folder {
         .execute(conn)
         .await?;
 
+        trace!(id = %id, "deleted folder");
         Ok(())
     }
 
@@ -83,6 +87,7 @@ impl Folder {
         .execute(conn)
         .await?;
 
+        trace!(id = %id, "updated folder name to {}", name);
         Ok(())
     }
 }
@@ -147,6 +152,7 @@ impl ChangedFolder {
             .execute(pool)
             .await?;
 
+        trace!("cleared folder changelog");
         Ok(())
     }
 }

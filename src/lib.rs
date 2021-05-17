@@ -111,7 +111,7 @@ impl Bernard {
         self.pool.close().await
     }
 
-    #[tracing::instrument(level = "debug", skip(self))]
+    #[tracing::instrument(level = "info", skip(self))]
     pub async fn sync_drive<'a>(&'a self, drive_id: &'a str) -> Result<SyncKind<'a>> {
         // Always clear changelog for consistent database state when sync_drive is called.
         database::clear_changelog(drive_id, &self.pool).await?;

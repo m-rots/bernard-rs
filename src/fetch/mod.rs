@@ -200,13 +200,6 @@ impl Item {
             Item::Folder(folder) => folder.id,
         }
     }
-
-    // pub fn id(&self) -> &'_ str {
-    //     match self {
-    //         Item::File(file) => &file.id,
-    //         Item::Folder(folder) => &folder.id,
-    //     }
-    // }
 }
 
 // Custom deserializer for Item to parse into the correct enum variant.

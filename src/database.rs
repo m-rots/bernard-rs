@@ -1,7 +1,7 @@
 use crate::fetch::{Change, Item};
 use crate::model::{ChangedFile, ChangedFolder, ChangedPath, Drive, File, Folder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use tracing::{debug, trace};
+use tracing::trace;
 
 pub(crate) type Connection = SqliteConnection;
 
@@ -24,7 +24,6 @@ pub async fn clear_changelog(drive_id: &str, pool: &Pool) -> sqlx::Result<()> {
     ChangedFolder::clear(drive_id, pool).await?;
     ChangedFile::clear(drive_id, pool).await?;
 
-    debug!("cleared changelog");
     Ok(())
 }
 
@@ -36,7 +35,6 @@ async fn delete_file_or_folder(
     Folder::delete(id, drive_id, conn).await?;
     File::delete(id, drive_id, conn).await?;
 
-    trace!(%id, "deleted file/folder");
     Ok(())
 }
 
@@ -50,6 +48,7 @@ fn item_to_change(drive_id: &str, item: Item) -> Change {
     }
 }
 
+#[tracing::instrument(level = "debug", skip(changes, pool))]
 pub async fn merge_changes<I>(
     drive_id: &str,
     changes: I,
@@ -87,8 +86,9 @@ where
     tx.commit().await
 }
 
+#[tracing::instrument(level = "debug", skip(name, items, pool))]
 pub async fn add_drive<I>(
-    id: &str,
+    drive_id: &str,
     name: &str,
     page_token: &str,
     items: I,
@@ -99,11 +99,11 @@ where
 {
     let mut tx = pool.begin().await?;
 
-    Drive::create(id, page_token, &mut tx).await?;
+    Drive::create(drive_id, page_token, &mut tx).await?;
 
     let drive_folder = Folder {
-        id: id.to_owned(),
-        drive_id: id.to_owned(),
+        id: drive_id.to_owned(),
+        drive_id: drive_id.to_owned(),
         name: name.to_owned(),
         parent: None,
         trashed: false,

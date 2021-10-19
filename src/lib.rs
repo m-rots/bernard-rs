@@ -137,7 +137,7 @@ impl Bernard {
                 let (changes, new_page_token) = self
                     .fetch
                     .clone()
-                    .changes(&drive_id, &drive.page_token)
+                    .changes(drive_id, &drive.page_token)
                     .await?;
 
                 match new_page_token == drive.page_token {
@@ -147,12 +147,12 @@ impl Bernard {
                     }
                     false => {
                         info!(page_token = %new_page_token, "page token has changed");
-                        database::merge_changes(&drive_id, changes, &new_page_token, &self.pool)
+                        database::merge_changes(drive_id, changes, &new_page_token, &self.pool)
                             .await?;
                     }
                 };
 
-                Ok(SyncKind::Partial(Changes::new(&self, &drive_id)))
+                Ok(SyncKind::Partial(Changes::new(self, drive_id)))
             }
         }
     }

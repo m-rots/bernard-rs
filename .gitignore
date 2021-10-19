@@ -1,5 +1,7 @@
 # Bernard
 *.db
+*.db-shm
+*.db-wal
 *.json
 
 # Rust

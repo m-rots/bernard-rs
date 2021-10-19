@@ -39,7 +39,7 @@ impl<'a> Claims<'a> {
 
 fn create_jwt(account: &Account, scope: &Scope) -> (String, DateTime<Utc>) {
     let header = Header::new(Algorithm::RS256);
-    let claims = Claims::new(&account.client_email, &scope);
+    let claims = Claims::new(&account.client_email, scope);
 
     let jwt = encode(&header, &claims, &account.private_key.0).unwrap();
     (jwt, claims.exp)

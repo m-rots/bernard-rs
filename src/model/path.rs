@@ -9,11 +9,21 @@ pub enum Path {
     Folder(InnerPath),
 }
 
+impl Path {
+    pub fn trashed(&self) -> bool {
+        match self {
+            Self::File(inner) => inner.trashed,
+            Self::Folder(inner) => inner.trashed,
+        }
+    }
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct InnerPath {
     pub id: String,
     pub drive_id: String,
     pub path: PathBuf,
+    pub trashed: bool,
 }
 
 #[derive(Debug)]
@@ -56,6 +66,7 @@ struct PathChangelog {
     pub path: String,
     pub folder: bool,
     pub deleted: bool,
+    pub trashed: bool,
 }
 
 impl From<PathChangelog> for Path {
@@ -64,6 +75,7 @@ impl From<PathChangelog> for Path {
             id: p.id,
             drive_id: p.drive_id,
             path: p.path.into(),
+            trashed: p.trashed,
         };
 
         match p.folder {

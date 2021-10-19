@@ -23,24 +23,22 @@ pub enum Error {
     #[snafu(display("Service Account does not have viewer permission on Shared Drive"))]
     DriveNotFound { backtrace: Backtrace },
     #[snafu(display("Unable to connect to the Google Drive API"))]
-    ConnectionError { source: reqwest::Error },
+    Connection { source: reqwest::Error },
     #[snafu(display("Unable to parse/deserialise the JSON response"))]
-    DeserialisationError { source: reqwest::Error },
+    Deserialisation { source: reqwest::Error },
     #[snafu(display("Invalid Service Account Credentials"))]
     InvalidCredentials { backtrace: Backtrace },
     #[snafu(display("An unknown error occured!"))]
     UnknownStatus { status: StatusCode },
     #[snafu(display("The Google Drive API is having some issues"))]
-    ServerError { status: StatusCode },
+    Server { status: StatusCode },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn to_backoff_error(error: Error) -> backoff::Error<Error> {
     match error {
-        Error::ConnectionError { .. } | Error::ServerError { .. } => {
-            backoff::Error::Transient(error)
-        }
+        Error::Connection { .. } | Error::Server { .. } => backoff::Error::Transient(error),
         _ => backoff::Error::Permanent(error),
     }
 }
@@ -88,20 +86,16 @@ impl Fetcher {
     {
         trace!(url_path = %request.url().path(), "making request");
 
-        let response = self
-            .client
-            .execute(request)
-            .await
-            .context(ConnectionError)?;
+        let response = self.client.execute(request).await.context(Connection)?;
 
         let status = response.status();
         if status.is_success() {
-            let response: T = response.json().await.context(DeserialisationError)?;
+            let response: T = response.json().await.context(Deserialisation)?;
             return Ok(response);
         }
 
         if status.is_server_error() {
-            return Err(ServerError { status }.build());
+            return Err(Server { status }.build());
         }
 
         let error = match status {

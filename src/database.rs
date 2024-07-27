@@ -1,7 +1,7 @@
 use crate::fetch::{Change, Item};
 use crate::model::{ChangedFile, ChangedFolder, ChangedPath, Drive, File, Folder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 
 pub(crate) type Connection = SqliteConnection;
 

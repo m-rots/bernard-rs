@@ -1,7 +1,7 @@
 use crate::database::{Connection, Pool};
 use futures::prelude::*;
-use sqlx::{Result, Sqlite, Error};
-use tracing::{debug, info, trace, warn};
+use sqlx::{Result};
+use tracing::{info, trace, warn};
 
 #[derive(Debug)]
 pub struct Folder {

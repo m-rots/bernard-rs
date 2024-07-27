@@ -1,7 +1,7 @@
 use crate::fetch::{Change, Item};
 use crate::model::{ChangedFile, ChangedFolder, ChangedPath, Drive, File, Folder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use tracing::trace;
+use tracing::{debug, trace, warn};
 
 pub(crate) type Connection = SqliteConnection;
 
@@ -60,29 +60,46 @@ where
 {
     let mut tx = pool.begin().await?;
 
-    // First update the page_token
+    // Update the page_token
     Drive::update_page_token(drive_id, page_token, &mut tx).await?;
 
-    // If an item changes to another drive_id, consider it removed.
-    let changes = changes.into_iter().map(|change| match change {
-        Change::ItemChanged(item) => item_to_change(drive_id, item),
-        _ => change,
-    });
+    // Process changes
+    for change in changes.into_iter() {
+        let change = match change {
+            Change::ItemChanged(item) => item_to_change(drive_id, item),
+            other => other, // 使用 catch-all 模式替代 '*'
+        };
 
-    for change in changes {
         match change {
             Change::DriveChanged(drive) => {
-                Folder::update_name(drive_id, drive_id, &drive.name, &mut tx).await?
+                if let Err(e) = Folder::update_name(drive_id, drive_id, &drive.name, &mut tx).await {
+                    warn!(error = %e, "Failed to update drive name");
+                    // 继续处理其他更改
+                }
             }
-            Change::ItemChanged(item) => match item {
-                Item::File(file) => file.upsert(&mut tx).await?,
-                Item::Folder(folder) => folder.upsert(&mut tx).await?,
-            },
-            Change::ItemRemoved(id) => delete_file_or_folder(&id, drive_id, &mut tx).await?,
+            Change::ItemChanged(Item::Folder(folder)) => {
+                if let Err(e) = folder.upsert(&mut tx).await {
+                    warn!(id = %folder.id, error = %e, "Failed to upsert folder");
+                    // 继续处理其他更改
+                }
+            }
+            Change::ItemChanged(Item::File(file)) => {
+                if let Err(e) = file.upsert(&mut tx).await {
+                    warn!(id = %file.id, error = %e, "Failed to upsert file");
+                    // 继续处理其他更改
+                }
+            }
+            Change::ItemRemoved(id) => {
+                if let Err(e) = delete_file_or_folder(&id, drive_id, &mut tx).await {
+                    warn!(id = %id, error = %e, "Failed to delete file or folder");
+                    // 继续处理其他更改
+                }
+            }
             Change::DriveRemoved(_) => (),
         }
     }
 
+    // 尝试提交事务
     tx.commit().await
 }
 
@@ -111,10 +128,37 @@ where
 
     drive_folder.create(&mut tx).await?;
 
-    for item in items {
-        match item {
-            Item::File(file) => file.create(&mut tx).await?,
-            Item::Folder(folder) => folder.create(&mut tx).await?,
+    // Collect items into a Vec
+    let items: Vec<Item> = items.into_iter().collect();
+
+    // Create a HashSet to store existing folder IDs
+    let mut existing_folders = std::collections::HashSet::new();
+    existing_folders.insert(drive_id.to_owned());
+
+    // First pass: Process all folders
+    for item in &items {
+        if let Item::Folder(folder) = item {
+            // Check if parent folder exists before creating
+            if folder.parent.as_ref().map_or(true, |parent| existing_folders.contains(parent)) {
+                folder.create(&mut tx).await?;
+                existing_folders.insert(folder.id.clone());
+            } else {
+                // Log a warning or handle the case where parent folder doesn't exist
+                tracing::warn!("Parent folder {:?} doesn't exist for folder {}", folder.parent, folder.id);
+            }
+        }
+    }
+
+    // Second pass: Process all files
+    for item in &items {
+        if let Item::File(file) = item {
+            // Check if parent folder exists before creating the file
+            if existing_folders.contains(&file.parent) {
+                file.create(&mut tx).await?;
+            } else {
+                // Log a warning or handle the case where parent folder doesn't exist
+                tracing::warn!("Parent folder {} doesn't exist for file {}", file.parent, file.id);
+            }
         }
     }
 

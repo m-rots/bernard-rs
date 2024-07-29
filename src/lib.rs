@@ -32,18 +32,18 @@ pub enum ErrorKind {
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 enum InnerError {
-    #[snafu(display("Database"))]
+    #[snafu(display("Database error: {}", source))]
     Database { source: sqlx::Error },
-    #[snafu(display("Network"))]
+    #[snafu(display("Network error: {}", source))]
     Network { source: fetch::Error },
-    #[snafu(display("Received a partial change list from Google"))]
+    #[snafu(display("Received a partial change list from Google. Database error: {}", source))]
     PartialChangeList { source: sqlx::Error },
-    #[snafu(display("Cannot read the Service Account JWK file: {:?}", file_name))]
+    #[snafu(display("Cannot read the Service Account JWK file: {:?}. IO error: {}", file_name, source))]
     WhereIsJWK {
         file_name: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(display("Invalid Service Account JWK file: {:?}", file_name))]
+    #[snafu(display("Invalid Service Account JWK file: {:?}. JSON error: {}", file_name, source))]
     InvalidJWK {
         file_name: PathBuf,
         source: serde_json::Error,

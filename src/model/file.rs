@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use crate::database::{Connection, Pool};
 use futures::prelude::*;
-use sqlx::{Result};
-use tracing::{info, trace, warn};
+use sqlx::Result;
+use tracing::{trace};
 
 #[derive(Debug)]
 pub struct File {
@@ -16,14 +17,38 @@ pub struct File {
 
 impl File {
     pub(crate) async fn create(&self, conn: &mut Connection) -> Result<()> {
-        info!(id = %self.id, drive_id = %self.drive_id, name = %self.name, "Starting to create file");
+        sqlx::query!(
+            "
+            INSERT INTO files
+                (id, drive_id, name, trashed, parent, md5, size)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7)
+            ",
+            self.id,
+            self.drive_id,
+            self.name,
+            self.trashed,
+            self.parent,
+            self.md5,
+            self.size
+        )
+            .execute(conn)
+            .await?;
 
-        match sqlx::query!(
+        trace!(id = %self.id, "created file");
+        Ok(())
+    }
+    pub(crate) async fn upsert(&self, conn: &mut Connection) -> Result<()> {
+        sqlx::query!(
         "
-        INSERT INTO files
-            (id, drive_id, name, trashed, parent, md5, size)
-        VALUES
-            ($1, $2, $3, $4, $5, $6, $7)
+        UPDATE files
+        SET
+            name = $3,
+            trashed = $4,
+            parent = $5,
+            md5 = $6,
+            size = $7
+        WHERE id = $1 AND drive_id = $2
         ",
         self.id,
         self.drive_id,
@@ -34,75 +59,14 @@ impl File {
         self.size
     )
             .execute(conn)
-            .await
-        {
-            Ok(_) => {
-                trace!(id = %self.id, "Created file successfully");
-                Ok(())
-            }
-            Err(e) => {
-                warn!(error = ?e, "Failed to create file");
-                Err(e)
-            }
-        }
+            .await?;
+
+        trace!(id = %self.id, "updated file");
+        Ok(())
     }
 
-    pub(crate) async fn upsert(&self, conn: &mut Connection) -> Result<()> {
-        info!(id = %self.id, drive_id = %self.drive_id, name = %self.name, "upsert to create file");
 
-        // 检查父文件夹是否存在
-        if !self.parent.is_empty() {
-            let parent_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM folders WHERE id = $1 AND drive_id = $2)")
-                .bind(&self.parent)
-                .bind(&self.drive_id)
-                .fetch_one(&mut *conn)
-                .await?;
 
-            if !parent_exists {
-                warn!(
-                id = %self.id,
-                parent_id = %self.parent,
-                drive_id = %self.drive_id,
-                "Parent folder not found"
-            );
-                // 根据您的需求，您可能想在这里返回错误
-                // return Err(anyhow::anyhow!("Parent folder not found"));
-            }
-        }
-
-        // 定义文件查询
-        let file_query = r#"
-    INSERT OR REPLACE INTO files (id, drive_id, name, trashed, parent, md5, size)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    "#;
-
-        // 执行文件查询
-        let result = sqlx::query(file_query)
-            .bind(&self.id)
-            .bind(&self.drive_id)
-            .bind(&self.name)
-            .bind(self.trashed)
-            .bind(&self.parent)
-            .bind(&self.md5)
-            .bind(self.size)
-            .execute(&mut *conn)
-            .await;
-
-        match result {
-            Ok(_) => {
-                trace!(id = %self.id, "upserted file successfully");
-                Ok(())
-            }
-            Err(e) => {
-                warn!(
-                id = %self.id,
-                error = %e,
-                "Failed to upsert file"
-            );
-                Err(e.into())
-            }
-        }
-    }
 
 
 
@@ -119,6 +83,37 @@ impl File {
 
         trace!(id = %id, "deleted file");
         Ok(())
+    }
+
+    pub(crate) async fn get_all_ids(drive_id: &str, conn: &mut Connection) -> Result<HashSet<String>> {
+        let rows = sqlx::query!(
+            "SELECT id FROM files WHERE drive_id = $1",
+            drive_id
+        )
+            .fetch_all(conn)
+            .await?;
+
+        let ids: HashSet<String> = rows.into_iter().map(|row| row.id).collect();
+
+        trace!(drive_id = %drive_id, count = %ids.len(), "fetched all file ids");
+        Ok(ids)
+    }
+
+    pub(crate) async fn get_all(drive_id: &str, conn: &mut Connection) -> Result<Vec<File>> {
+        let rows = sqlx::query_as!(
+            File,
+            r#"
+            SELECT id, drive_id, name, trashed, parent, md5, size
+            FROM files
+            WHERE drive_id = $1
+            "#,
+            drive_id
+        )
+            .fetch_all(conn)
+            .await?;
+
+        trace!(drive_id = %drive_id, count = %rows.len(), "fetched all files");
+        Ok(rows)
     }
 }
 

@@ -1,7 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use crate::fetch::{Change, Item};
 use crate::model::{ChangedFile, ChangedFolder, ChangedPath, Drive, File, Folder};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqlitePool, SqlitePoolOptions};
-use tracing::{trace, warn};
+use tracing::{debug, info, trace, warn};
 
 pub(crate) type Connection = SqliteConnection;
 
@@ -48,6 +49,38 @@ fn item_to_change(drive_id: &str, item: Item) -> Change {
     }
 }
 
+
+fn get_children_ids(folder_id: &str, folders: &Vec<Folder>, files: &Vec<File>) -> (HashSet<String>, HashSet<String>) {
+    let mut folder_ids: HashSet<String> = HashSet::new();
+    let mut file_ids: HashSet<String> = HashSet::new();
+
+    folder_ids.insert(folder_id.to_string()); // 将初始 folder_id 添加到结果集中
+
+    // 使用循环查找所有子文件夹
+    let mut current_level: Vec<&str> = vec![folder_id];
+    while !current_level.is_empty() {
+        let mut next_level: Vec<&str> = Vec::new();
+        for &parent_id in &current_level {
+            for folder in folders {
+                if folder.parent.as_ref() == Some(&parent_id.to_string()) {
+                    folder_ids.insert(folder.id.clone());
+                    next_level.push(&folder.id); // 将子文件夹ID添加到下一层级
+                }
+            }
+        }
+        current_level = next_level;
+    }
+
+    // 查找文件
+    for file in files {
+        if folder_ids.contains(&file.parent) {
+            file_ids.insert(file.id.clone());
+        }
+    }
+
+    (folder_ids, file_ids)
+}
+
 #[tracing::instrument(level = "debug", skip(changes, pool))]
 pub async fn merge_changes<I>(
     drive_id: &str,
@@ -60,111 +93,102 @@ where
 {
     let mut tx = pool.begin().await?;
 
-    // Update the page_token
+    // First update the page_token
     Drive::update_page_token(drive_id, page_token, &mut tx).await?;
 
-    // Process changes
-    for change in changes.into_iter() {
-        let change = match change {
-            Change::ItemChanged(item) => item_to_change(drive_id, item),
-            other => other, // 使用 catch-all 模式替代 '*'
-        };
+    // Query all folder IDs
+    let mut folder_ids: HashSet<String> = Folder::get_all_ids(drive_id, &mut tx).await?;
+    debug!("Fetched {} folder IDs", folder_ids.len());
 
+    // Query all file IDs
+    let mut file_ids: HashSet<String> = File::get_all_ids(drive_id, &mut tx).await?;
+    debug!("Fetched {} file IDs", file_ids.len());
+
+    // If an item changes to another drive_id, consider it removed.
+    let changes = changes.into_iter().map(|change| match change {
+        Change::ItemChanged(item) => item_to_change(drive_id, item),
+        _ => change,
+    });
+
+    for change in changes {
         match change {
             Change::DriveChanged(drive) => {
-                if let Err(e) = Folder::update_name(drive_id, drive_id, &drive.name, &mut tx).await {
-                    warn!(error = %e, "Failed to update drive name");
-                    // 继续处理其他更改
-                }
+                Folder::update_name(drive_id, drive_id, &drive.name, &mut tx).await?
             }
-            Change::ItemChanged(Item::Folder(folder)) => {
-                if let Err(e) = folder.upsert(&mut tx).await {
-                    warn!(id = %folder.id, error = %e, "Failed to upsert folder");
-                    // 继续处理其他更改
+            Change::ItemChanged(item) => match item {
+                Item::Folder(folder) => {
+                    if folder_ids.contains(&folder.id) {
+                        folder.upsert(&mut tx).await?
+                    } else {
+                        if folder.parent.as_ref().map_or(false, |parent_id| folder_ids.contains(parent_id)) {
+                            info!("New folder ID {} found, adding to database", folder.id);
+                            // 执行相应操作
+                            folder.create(&mut tx).await?;
+                            // 插入成功后，将 ID 添加到 HashSet
+                            folder_ids.insert(folder.id.clone());
+                        } else {
+                            // 如果父文件夹不存在于 folder_ids 中，记录警告信息
+                            warn!("Parent folder ID {} not found for new folder ID {}, skipping insertion", folder.parent.as_ref().unwrap(), folder.id);
+                        };
+
+                    }
                 }
-            }
-            Change::ItemChanged(Item::File(file)) => {
-                if let Err(e) = file.upsert(&mut tx).await {
-                    warn!(id = %file.id, error = %e, "Failed to upsert file");
-                    // 继续处理其他更改
+                Item::File(file) => {
+                    if file_ids.contains(&file.id) {
+                        file.upsert(&mut tx).await?;
+                    } else {
+                        if folder_ids.contains(&file.parent) {
+                            info!("New file ID {} found, adding to database", file.id);
+                            file.create(&mut tx).await?;
+                            // 插入成功后，将 ID 添加到 HashSet
+                            file_ids.insert(file.id.clone());
+                        }else {
+                            // 如果父文件夹不存在于 folder_ids 中，记录警告信息
+                            warn!("Parent folder ID {} not found for new file ID {}, skipping insertion", file.parent, file.id);
+                        };
+
+                    }
                 }
-            }
+            },
             Change::ItemRemoved(id) => {
-                if let Err(e) = delete_file_or_folder(&id, drive_id, &mut tx).await {
-                    warn!(id = %id, error = %e, "Failed to delete file or folder");
-                    // 继续处理其他更改
+                let folders: Vec<Folder> = Folder::get_all(drive_id, &mut tx).await?;
+                let files: Vec<File> = File::get_all(drive_id, &mut tx).await?;
+
+
+
+                if folder_ids.remove(&id) {
+                    // 获取所有子文件夹和文件的 ID
+                    let (child_folder_ids, child_file_ids) = get_children_ids(&id, &folders, &files);
+                    debug!(
+                        "Need to remove all child_folder_ids {:?} and child_file_ids {:?}",
+                        child_folder_ids,
+                        child_file_ids
+                    );
+                    // 从 folder_ids 和 file_ids 中移除所有要删除的 ID
+                    for descendant_id in &child_folder_ids {
+                        folder_ids.remove(descendant_id);
+                    }
+                    for descendant_id in &child_file_ids {
+                        file_ids.remove(descendant_id);
+                    }
+
+                    delete_file_or_folder(&id, drive_id, &mut tx).await?;
+                    debug!("Removed folder ID {}", id);
+                } else if file_ids.remove(&id) {
+                    delete_file_or_folder(&id, drive_id, &mut tx).await?;
+                    debug!("Removed file ID {}", id);
+                } else {
+                    warn!("Item ID {} not found for deletion", id);
                 }
             }
             Change::DriveRemoved(_) => (),
         }
     }
 
-    // 尝试提交事务
     tx.commit().await
 }
 
-#[tracing::instrument(level = "debug", skip(name, items, pool))]
-pub async fn add_drive<I>(
-    drive_id: &str,
-    name: &str,
-    page_token: &str,
-    items: I,
-    pool: &Pool,
-) -> sqlx::Result<()>
-where
-    I: IntoIterator<Item = Item>,
-{
-    let mut tx = pool.begin().await?;
 
-    Drive::create(drive_id, page_token, &mut tx).await?;
-
-    let drive_folder = Folder {
-        id: drive_id.to_owned(),
-        drive_id: drive_id.to_owned(),
-        name: name.to_owned(),
-        parent: None,
-        trashed: false,
-    };
-
-    drive_folder.create(&mut tx).await?;
-
-    // Collect items into a Vec
-    let items: Vec<Item> = items.into_iter().collect();
-
-    // Create a HashSet to store existing folder IDs
-    let mut existing_folders = std::collections::HashSet::new();
-    existing_folders.insert(drive_id.to_owned());
-
-    // First pass: Process all folders
-    for item in &items {
-        if let Item::Folder(folder) = item {
-            // Check if parent folder exists before creating
-            if folder.parent.as_ref().map_or(true, |parent| existing_folders.contains(parent)) {
-                folder.create(&mut tx).await?;
-                existing_folders.insert(folder.id.clone());
-            } else {
-                // Log a warning or handle the case where parent folder doesn't exist
-                tracing::warn!("Parent folder {:?} doesn't exist for folder {}", folder.parent, folder.id);
-            }
-        }
-    }
-
-    // Second pass: Process all files
-    for item in &items {
-        if let Item::File(file) = item {
-            // Check if parent folder exists before creating the file
-            if existing_folders.contains(&file.parent) {
-                file.create(&mut tx).await?;
-            } else {
-                // Log a warning or handle the case where parent folder doesn't exist
-                tracing::warn!("Parent folder {} doesn't exist for file {}", file.parent, file.id);
-            }
-        }
-    }
-
-    // Explicitly commit (otherwise this would rollback on drop)
-    tx.commit().await
-}
 
 pub async fn get_drive(drive_id: &str, pool: &Pool) -> sqlx::Result<Option<Drive>> {
     Drive::get_by_id(drive_id, pool).await

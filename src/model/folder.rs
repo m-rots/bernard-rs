@@ -75,11 +75,6 @@ impl Folder {
         Ok(())
     }
 
-
-
-
-
-
     pub(crate) async fn delete(id: &str, drive_id: &str, conn: &mut Connection) -> Result<()> {
         sqlx::query!(
             "DELETE FROM folders WHERE id = $1 AND drive_id = $2",

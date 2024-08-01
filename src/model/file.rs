@@ -65,13 +65,6 @@ impl File {
         Ok(())
     }
 
-
-
-
-
-
-
-
     pub(crate) async fn delete(id: &str, drive_id: &str, conn: &mut Connection) -> Result<()> {
         sqlx::query!(
             "DELETE FROM files WHERE id = $1 AND drive_id = $2",
